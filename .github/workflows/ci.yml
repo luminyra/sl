@@ -1,0 +1,52 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: 'off'
+      GOTOOLCHAIN: local
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.x'
+          check-latest: true
+          cache: false
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [[ -n "$unformatted" ]]; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Check module metadata
+        run: go mod tidy -diff
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race tests and coverage
+        run: go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile="$RUNNER_TEMP/coverage.out" ./...
+
+      - name: Coverage summary
+        run: |
+          coverage=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | tail -n 1)
+          printf '### Statement coverage\n\n    %s\n' "$coverage" >> "$GITHUB_STEP_SUMMARY"
