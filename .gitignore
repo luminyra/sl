@@ -3,6 +3,7 @@
 *.out
 *.prof
 coverage.*
+bench.txt
 
 # Local Go workspaces
 go.work
