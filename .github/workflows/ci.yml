@@ -44,9 +44,17 @@ jobs:
         run: go vet ./...
 
       - name: Race tests and coverage
-        run: go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile="$RUNNER_TEMP/coverage.out" ./...
+        # Coverage counts the library package only: the programs under
+        # examples/ have no tests of their own and would understate it.
+        run: go test -race -count=1 -shuffle=on -coverpkg=. -coverprofile="$RUNNER_TEMP/coverage.out" ./...
 
-      - name: Coverage summary
+      - name: Coverage gate
+        env:
+          COVERAGE_MIN: '95'
         run: |
-          coverage=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | tail -n 1)
-          printf '### Statement coverage\n\n    %s\n' "$coverage" >> "$GITHUB_STEP_SUMMARY"
+          total=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '/^total:/ { sub(/%/, "", $NF); print $NF }')
+          printf '### Statement coverage\n\n    %s%% of the library package (minimum %s%%)\n' "$total" "$COVERAGE_MIN" >> "$GITHUB_STEP_SUMMARY"
+          if ! awk -v total="$total" -v min="$COVERAGE_MIN" 'BEGIN { exit !(total >= min) }'; then
+            echo "::error::Coverage is ${total}%, below the required ${COVERAGE_MIN}%"
+            exit 1
+          fi

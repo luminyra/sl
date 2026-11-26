@@ -3,6 +3,7 @@
 GO    ?= go
 BENCH ?= .
 COUNT ?= 6
+COVER_MIN ?= 95
 
 .DEFAULT_GOAL := help
 .PHONY: help fmt fmt-check tidy vet fix test race cover bench examples check clean
@@ -31,9 +32,11 @@ test: ## Run the tests
 race: ## Run the tests with the race detector, in random order
 	$(GO) test -race -count=1 -shuffle=on ./...
 
-cover: ## Print the test coverage of the library package
-	$(GO) test -count=1 -coverprofile=coverage.out .
-	$(GO) tool cover -func=coverage.out | tail -n 1
+cover: ## Check the library's test coverage against COVER_MIN percent
+	$(GO) test -count=1 -coverpkg=. -coverprofile=coverage.out ./...
+	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ { sub(/%/, "", $$NF); print $$NF }'); \
+	echo "coverage: $$total% of the library package (minimum $(COVER_MIN)%)"; \
+	awk -v total="$$total" -v min="$(COVER_MIN)" 'BEGIN { exit !(total >= min) }' || { echo "coverage is below $(COVER_MIN)%"; exit 1; }
 
 bench: ## Run benchmarks (BENCH=regexp, COUNT=runs) and save them to bench.txt
 	$(GO) test -run='^$$' -bench='$(BENCH)' -benchmem -count=$(COUNT) . | tee bench.txt
@@ -41,7 +44,7 @@ bench: ## Run benchmarks (BENCH=regexp, COUNT=runs) and save them to bench.txt
 examples: ## Run every program in examples/
 	@for dir in examples/*/; do echo "== $$dir"; $(GO) run "./$$dir" || exit 1; done
 
-check: fmt-check tidy vet race ## Run the same checks as CI
+check: fmt-check tidy vet race cover ## Run the same checks as CI
 
 clean: ## Remove files created by cover and bench
 	rm -f coverage.out bench.txt
