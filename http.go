@@ -52,6 +52,10 @@ func HTTPMiddleware(logger *slog.Logger, cfg HTTPConfig) func(http.Handler) http
 			next.ServeHTTP(rw, r)
 
 			status := rw.statusCode()
+			level := levelOf(status)
+			if !logger.Enabled(r.Context(), level) {
+				return // skip building attributes for a record nobody keeps
+			}
 			reqAttrs := []slog.Attr{
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
@@ -64,7 +68,7 @@ func HTTPMiddleware(logger *slog.Logger, cfg HTTPConfig) func(http.Handler) http
 					reqAttrs = append(reqAttrs, slog.String("id", id))
 				}
 			}
-			logger.LogAttrs(r.Context(), levelOf(status), "http request",
+			logger.LogAttrs(r.Context(), level, "http request",
 				slog.GroupAttrs("request", reqAttrs...),
 				slog.GroupAttrs("response",
 					slog.Int("status", status),

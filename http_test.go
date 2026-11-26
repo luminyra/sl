@@ -2,6 +2,7 @@ package sl
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -110,4 +111,27 @@ func TestHTTPUnwrap(t *testing.T) {
 		}
 	}))
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+}
+
+func BenchmarkHTTPMiddleware(b *testing.B) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	req := httptest.NewRequest(http.MethodGet, "/users/42?x=1", nil)
+	b.Run("bare", func(b *testing.B) {
+		for b.Loop() {
+			ok.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	})
+	b.Run("level disabled", func(b *testing.B) {
+		logger := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+		h := HTTPMiddleware(logger, HTTPConfig{})(ok)
+		for b.Loop() {
+			h.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	})
+	b.Run("HTTPMiddleware", func(b *testing.B) {
+		h := HTTPMiddleware(slog.New(slog.NewJSONHandler(io.Discard, nil)), HTTPConfig{})(ok)
+		for b.Loop() {
+			h.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	})
 }

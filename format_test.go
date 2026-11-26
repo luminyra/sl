@@ -3,8 +3,10 @@ package sl
 import (
 	"bytes"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,5 +84,66 @@ func TestForTypeIgnoresOtherKindsAndEmptyGroup(t *testing.T) {
 	logger.WithGroup("").Info("x", "n", 1, "s", "text")
 	if got := buf.String(); !strings.Contains(got, "n=1 s=text") {
 		t.Fatalf("output = %q", got)
+	}
+}
+
+func BenchmarkFormatHandler(b *testing.B) {
+	attrs := []any{"user", "alice", "password", "secret", "err", errors.New("boom"), slog.Group("req", "id", 7, "token", "t")}
+	b.Run("bare", func(b *testing.B) {
+		logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+		for b.Loop() {
+			logger.Info("login", attrs...)
+		}
+	})
+	b.Run("nothing to rewrite", func(b *testing.B) {
+		plain := []any{"user", "alice", "n", 3, slog.Group("req", "id", 7, "path", "/")}
+		logger := slog.New(NewFormatHandler(slog.NewJSONHandler(io.Discard, nil), Redact("password", "token"), FormatErrors()))
+		for b.Loop() {
+			logger.Info("login", plain...)
+		}
+	})
+	b.Run("Redact+FormatErrors", func(b *testing.B) {
+		logger := slog.New(NewFormatHandler(slog.NewJSONHandler(io.Discard, nil), Redact("password", "token"), FormatErrors()))
+		for b.Loop() {
+			logger.Info("login", attrs...)
+		}
+	})
+}
+
+// TestFormatterSeesGroupPaths checks the group paths passed to formatters for
+// nested and sibling groups, which share one buffer while formatting.
+func TestFormatterSeesGroupPaths(t *testing.T) {
+	var seen []string
+	record := func(groups []string, a slog.Attr) (slog.Value, bool) {
+		if a.Value.Kind() != slog.KindGroup {
+			seen = append(seen, strings.Join(append(slices.Clone(groups), a.Key), "."))
+		}
+		return a.Value, false
+	}
+	logger := slog.New(NewFormatHandler(slog.NewTextHandler(io.Discard, nil), record)).WithGroup("req")
+	logger.Info("x",
+		slog.Group("a", slog.Group("b", "k1", 1), "k2", 2),
+		slog.Group("c", "k3", 3),
+		"k4", 4,
+	)
+	expected := []string{"req.a.b.k1", "req.a.k2", "req.c.k3", "req.k4"}
+	if !slices.Equal(seen, expected) {
+		t.Fatalf("paths = %v, expected %v", seen, expected)
+	}
+}
+
+type lazyValue struct{}
+
+func (lazyValue) LogValue() slog.Value { return slog.StringValue("resolved") }
+
+func TestUnchangedRecordsPassThrough(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(NewFormatHandler(slog.NewTextHandler(&buf, nil), Redact("password")))
+	logger.Info("plain", "user", "alice", slog.Group("g", "n", 1), "lazy", lazyValue{})
+	got := buf.String()
+	for _, want := range []string{"user=alice", "g.n=1", "lazy=resolved"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
 	}
 }

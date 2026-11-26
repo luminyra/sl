@@ -9,8 +9,8 @@ import (
 )
 
 // Formatter rewrites one attribute. groups lists the enclosing group names,
-// outermost first. It returns the new value and true, or false to leave the
-// attribute unchanged.
+// outermost first; it is only valid during the call and must not be kept. It
+// returns the new value and true, or false to leave the attribute unchanged.
 type Formatter func(groups []string, a slog.Attr) (slog.Value, bool)
 
 // NewFormatHandler returns a handler that applies formatters, then passes
@@ -38,19 +38,35 @@ func (h *formatHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.next.Enabled(ctx, level)
 }
 
+// maxInlineAttrs is the number of attributes that Handle formats in a stack
+// buffer before it starts to allocate.
+const maxInlineAttrs = 16
+
 func (h *formatHandler) Handle(ctx context.Context, r slog.Record) error {
-	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	var (
+		attrsBuf  [maxInlineAttrs]slog.Attr
+		isChanged bool
+	)
+	attrs := attrsBuf[:0]
 	r.Attrs(func(a slog.Attr) bool {
-		out.AddAttrs(h.format(h.groups, a))
+		formatted, changed := h.format(h.groups, a)
+		attrs = append(attrs, formatted)
+		isChanged = isChanged || changed
 		return true
 	})
+	if !isChanged {
+		// Nothing to rewrite: pass the record on as is, without copying it.
+		return h.next.Handle(ctx, r)
+	}
+	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	out.AddAttrs(attrs...)
 	return h.next.Handle(ctx, out)
 }
 
 func (h *formatHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	formatted := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
-		formatted[i] = h.format(h.groups, a)
+		formatted[i], _ = h.format(h.groups, a)
 	}
 	return &formatHandler{next: h.next.WithAttrs(formatted), formatters: h.formatters, groups: h.groups}
 }
@@ -66,23 +82,47 @@ func (h *formatHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-func (h *formatHandler) format(groups []string, a slog.Attr) slog.Attr {
+// format applies the formatters to a and, for a group, to its members. It
+// reports whether the result differs from a, so that unchanged records can
+// skip being copied.
+func (h *formatHandler) format(groups []string, a slog.Attr) (slog.Attr, bool) {
+	// A LogValuer is resolved once here; handing the resolved value on spares
+	// the next handler from calling LogValue again.
+	changed := a.Value.Kind() == slog.KindLogValuer
 	a.Value = a.Value.Resolve()
 	for _, f := range h.formatters {
 		if v, ok := f(groups, a); ok {
 			a.Value = v.Resolve()
+			changed = true
 		}
 	}
 	if a.Value.Kind() == slog.KindGroup {
-		inner := append(slices.Clip(groups), a.Key)
 		members := a.Value.Group()
-		formatted := make([]slog.Attr, len(members))
-		for i, m := range members {
-			formatted[i] = h.format(inner, m)
+		// Groups are formatted depth first, so nested levels can share one
+		// buffer. It is allocated, with room to spare, only when a record
+		// has a group; h.groups itself is clipped and never written to.
+		inner := groups
+		if len(inner) == cap(inner) {
+			inner = slices.Grow(inner, 4)
 		}
-		a.Value = slog.GroupValue(formatted...)
+		inner = append(inner, a.Key)
+		var formatted []slog.Attr // allocated on the first changed member
+		for i, m := range members {
+			fm, ok := h.format(inner, m)
+			if ok && formatted == nil {
+				formatted = make([]slog.Attr, len(members))
+				copy(formatted, members[:i])
+			}
+			if formatted != nil {
+				formatted[i] = fm
+			}
+		}
+		if formatted != nil {
+			a.Value = slog.GroupValue(formatted...)
+			changed = true
+		}
 	}
-	return a
+	return a, changed
 }
 
 // ForKey rewrites attributes with the given key at any depth.

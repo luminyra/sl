@@ -2,6 +2,7 @@ package sl
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -113,5 +114,14 @@ func TestSampleHandler(t *testing.T) {
 	got := buf.String()
 	if strings.Contains(got, "dropped") || !strings.Contains(got, "msg=kept g.n=1") || !strings.Contains(got, "ungrouped") {
 		t.Fatalf("output = %q", got)
+	}
+}
+
+func BenchmarkSampleHandler(b *testing.B) {
+	sampler := AnyOf(LevelAtLeast(slog.LevelError), ThresholdSampler(time.Hour, 1, nil))
+	logger := slog.New(NewSampleHandler(slog.NewJSONHandler(io.Discard, nil), sampler))
+	logger.Info("noisy") // the first copy is kept; the rest are dropped
+	for b.Loop() {
+		logger.Info("noisy", "n", 1)
 	}
 }
