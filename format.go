@@ -172,14 +172,57 @@ func Redact(keys ...string) Formatter {
 }
 
 // FormatErrors turns error values into a group with the error message and
-// its Go type.
+// its Go type. An error that is itself a [slog.LogValuer] is logged through
+// LogValue and never reaches a formatter. When such an error is wrapped
+// deeper in the chain, for example by fmt.Errorf with %w, the group also
+// carries the members of the group it logs as, so structured details such as
+// an error code or a stack trace survive the wrapping. The outer error still
+// provides the message and type.
 func FormatErrors() Formatter {
 	return ForType(func(err error) slog.Value {
-		return slog.GroupValue(
+		attrs := []slog.Attr{
 			slog.String("message", err.Error()),
 			slog.String("type", fmt.Sprintf("%T", err)),
-		)
+		}
+		if lv := wrappedLogValuer(err); lv != nil {
+			// AnyValue(...).Resolve recovers a panicking LogValue, as
+			// slog does for top-level values.
+			if v := slog.AnyValue(lv).Resolve(); v.Kind() == slog.KindGroup {
+				for _, a := range v.Group() {
+					if a.Key != "message" && a.Key != "type" {
+						attrs = append(attrs, a)
+					}
+				}
+			}
+		}
+		return slog.GroupValue(attrs...)
 	})
+}
+
+// wrappedLogValuer returns the first error in the chain of err that is a
+// [slog.LogValuer], following Unwrap depth first like [errors.As] but without
+// consulting As methods. It walks the chain by hand because errors.As would
+// allocate its target on every call.
+func wrappedLogValuer(err error) slog.LogValuer {
+	for err != nil {
+		if lv, ok := err.(slog.LogValuer); ok {
+			return lv
+		}
+		switch u := err.(type) {
+		case interface{ Unwrap() error }:
+			err = u.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, e := range u.Unwrap() {
+				if lv := wrappedLogValuer(e); lv != nil {
+					return lv
+				}
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
+	return nil
 }
 
 // FormatTimes formats time values with layout in loc. A nil loc keeps each

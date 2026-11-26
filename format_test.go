@@ -3,6 +3,7 @@ package sl
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -49,6 +50,60 @@ func TestFormatErrors(t *testing.T) {
 	got := buf.String()
 	if !strings.Contains(got, `err.message="file does not exist" err.type=*errors.errorString`) {
 		t.Fatalf("output = %q", got)
+	}
+}
+
+// structuredError stands in for an error type, such as errs.Error, that logs
+// itself as a group.
+type structuredError struct{ code string }
+
+func (e structuredError) Error() string { return "not found" }
+
+func (e structuredError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("message", e.Error()), slog.String("code", e.code))
+}
+
+type scalarError struct{}
+
+func (scalarError) Error() string        { return "scalar" }
+func (scalarError) LogValue() slog.Value { return slog.StringValue("ignored") }
+
+type emptyWrapper struct{}
+
+func (emptyWrapper) Error() string { return "empty" }
+func (emptyWrapper) Unwrap() error { return nil }
+
+type panickingError struct{}
+
+func (panickingError) Error() string        { return "panicking" }
+func (panickingError) LogValue() slog.Value { panic("boom") }
+
+func TestFormatErrorsKeepsWrappedLogValuer(t *testing.T) {
+	inner := structuredError{code: "USER_NOT_FOUND"}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"direct", inner, `err.message="not found" err.code=USER_NOT_FOUND`},
+		{"wrapped", fmt.Errorf("handler: %w", inner), `err.message="handler: not found" err.type=*fmt.wrapError err.code=USER_NOT_FOUND`},
+		{"joined", errors.Join(errors.New("first"), inner), `err.type=*errors.joinError err.code=USER_NOT_FOUND`},
+		{"scalar", fmt.Errorf("w: %w", scalarError{}), `err.message="w: scalar" err.type=*fmt.wrapError`},
+		{"panicking", fmt.Errorf("w: %w", panickingError{}), `err.message="w: panicking" err.type=*fmt.wrapError`},
+		{"joined plain", errors.Join(errors.New("a"), errors.New("b")), `err.message="a\nb" err.type=*errors.joinError`},
+		{"nil unwrap", emptyWrapper{}, `err.message=empty err.type=sl.emptyWrapper`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			newFormatLogger(&buf, FormatErrors()).Error("failed", "err", tc.err)
+			got := buf.String()
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("output = %q, want it to contain %q", got, tc.want)
+			}
+			if strings.Count(got, "err.message=") != 1 || strings.Contains(got, "ignored") {
+				t.Fatalf("output = %q, want one message and no scalar LogValue", got)
+			}
+		})
 	}
 }
 

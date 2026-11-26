@@ -114,7 +114,7 @@ handler = sl.NewFormatHandler(handler, sl.Redact("password", "token", "authoriza
 
 ```go
 handler = sl.NewFormatHandler(handler,
-	sl.FormatErrors(),                          // errors become {message, type}
+	sl.FormatErrors(),                          // errors become {message, type, ...}
 	sl.FormatTimes(time.RFC3339, time.UTC),     // times become UTC strings
 	sl.ForType(func(u User) slog.Value {        // your own types
 		return slog.GroupValue(slog.Int("id", u.ID))
@@ -123,7 +123,7 @@ handler = sl.NewFormatHandler(handler,
 )
 ```
 
-`ForKind` matches by `slog.Kind`, and any `func(groups []string, a slog.Attr) (slog.Value, bool)` is a `Formatter`.
+`ForKind` matches by `slog.Kind`, and any `func(groups []string, a slog.Attr) (slog.Value, bool)` is a `Formatter`. When an error wraps one that implements `slog.LogValuer`, such as an `errs.Error` wrapped with `fmt.Errorf`, `FormatErrors` adds the members of that error's group, so its code and stack trace survive the wrapping.
 
 ### Sample noisy logs without losing errors
 
